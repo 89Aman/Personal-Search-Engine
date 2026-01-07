@@ -1,18 +1,32 @@
 from typing import List, Optional
-import math
 import time
-from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
+
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
-from fastapi import FastAPI,UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from pathlib import Path
-from .ingest import ingest_folder
-from .config import DATA_DIR
-from .ingest import ingest_folder 
 
-from .config import CHROMA_DIR, EMBEDDING_MODEL_NAME, COLLECTION_NAME
+from .config import (
+    CHROMA_DIR,
+    EMBEDDING_MODEL_NAME,
+    COLLECTION_NAME,
+    DATA_DIR,
+)
+from .ingest import ingest_folder
+
+
+app = FastAPI(title="Personal Semantic Search Engine")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # React/Vite dev
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 client = chromadb.Client(
     Settings(
@@ -23,21 +37,14 @@ client = chromadb.Client(
 collection = client.get_or_create_collection(COLLECTION_NAME)
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
-app = FastAPI(title="Personal Semantic Search Engine")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 10
-    types: Optional[List[str]] = None  
-    max_age_days: Optional[int] = None  
-    recency_boost: float = 0.3         
+    types: Optional[List[str]] = None  # ["pdf", "markdown", "notes"]
+    max_age_days: Optional[int] = None  # recency filter
+    recency_boost: float = 0.3  # 0–1, how strong to weight recency
+
 
 def compute_recency_weight(mtime: float, max_age_days: Optional[int]) -> float:
     if max_age_days is None:
@@ -49,6 +56,7 @@ def compute_recency_weight(mtime: float, max_age_days: Optional[int]) -> float:
     if age_days > max_age_days:
         return 0.2
     return 1.0 - (age_days / (max_age_days + 1e-6)) * 0.8  # 1 → 0.2
+
 
 @app.post("/search")
 def search(req: SearchRequest):
@@ -77,7 +85,10 @@ def search(req: SearchRequest):
     for i, d, m, dist in zip(ids, docs, metas, distances):
         base_score = 1.0 - dist
         recency_weight = compute_recency_weight(m.get("mtime", time.time()), req.max_age_days)
-        final_score = (1 - req.recency_boost) * base_score + req.recency_boost * base_score * recency_weight
+        final_score = (
+            (1 - req.recency_boost) * base_score
+            + req.recency_boost * base_score * recency_weight
+        )
 
         scored.append(
             {
@@ -94,9 +105,10 @@ def search(req: SearchRequest):
 
     return {"results": scored}
 
+
 @app.post("/upload")
 async def upload_files(files: List[UploadFile] = File(...)):
-    saved_paths: list[Path] = []
+    saved_paths: List[Path] = []
     try:
         for f in files:
             ext = Path(f.filename).suffix.lower()
@@ -117,10 +129,10 @@ async def upload_files(files: List[UploadFile] = File(...)):
             target_path.write_bytes(content)
             saved_paths.append(target_path)
 
+        # Simple approach: re‑ingest the whole folder
         ingest_folder()
 
         return {"status": "ok", "files": [p.name for p in saved_paths]}
     finally:
         for f in files:
             await f.close()
-

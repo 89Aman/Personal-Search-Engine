@@ -1,8 +1,7 @@
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 import time
-import unicodedata
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import chromadb
 from sentence_transformers import SentenceTransformer
 from PyPDF2 import PdfReader
@@ -10,33 +9,24 @@ from PyPDF2 import PdfReader
 from .config import DATA_DIR, CHROMA_DIR, COLLECTION_NAME, EMBEDDING_MODEL_NAME
 
 
+# Persistent Chroma client
 client = chromadb.PersistentClient(path=str(CHROMA_DIR))
 collection = client.get_or_create_collection(COLLECTION_NAME)
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
 
-def clean_text_for_storage(text: str) -> str:
-    if not text:
-        return ""
-    text = unicodedata.normalize("NFKD", text)
-    text = text.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
-    return text
-
-
 def read_pdf(path: Path) -> str:
     reader = PdfReader(str(path))
-    pages: List[str] = []
+    texts: List[str] = []
     for page in reader.pages:
         t = page.extract_text() or ""
-        t = clean_text_for_storage(t)
-        if t.strip():
-            pages.append(t)
-    return "\n".join(pages)
+        if t:
+            texts.append(t)
+    return "\n".join(texts)
 
 
 def read_text_file(path: Path) -> str:
-    raw = path.read_text(encoding="utf-8", errors="ignore")
-    return clean_text_for_storage(raw)
+    return path.read_text(encoding="utf-8", errors="ignore")
 
 
 def chunk_text(
@@ -44,6 +34,7 @@ def chunk_text(
     chunk_size: int = 512,
     overlap: int = 64,
 ) -> List[str]:
+    """Split text into overlapping word-based chunks."""
     if not text:
         return []
 
@@ -65,46 +56,10 @@ def chunk_text(
     return chunks
 
 
-def encode_single_chunk(chunk: str) -> Tuple[str, List[float] | None]:
-    clean_chunk = clean_text_for_storage(chunk)
-    if not clean_chunk.strip():
-        return clean_chunk, None
-
-    try:
-        emb = embedder.encode([clean_chunk])
-        vec = emb[0]
-        vec_list = vec.tolist() if hasattr(vec, "tolist") else list(vec)
-        return clean_chunk, vec_list
-    except Exception as e:
-        print("[encode-skip] error:", repr(e))
-        print("[encode-skip] preview:", repr(clean_chunk[:160]))
-        return clean_chunk, None
-
-
-def encode_chunks_parallel(
-    chunks: List[str],
-    max_workers: int = 4,
-) -> Tuple[List[str], List[List[float]]]:
-    if not chunks:
-        return [], []
-
-    final_chunks: List[str] = []
-    final_embeddings: List[List[float]] = []
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(encode_single_chunk, c): idx for idx, c in enumerate(chunks)}
-        for fut in as_completed(futures):
-            clean_chunk, embedding = fut.result()
-            if embedding is None:
-                continue
-            final_chunks.append(clean_chunk)
-            final_embeddings.append(embedding)
-
-    return final_chunks, final_embeddings
-
-
 def ingest_folder() -> None:
+    """Index all PDFs / markdown / notes under data/."""
     doc_id_counter = int(time.time())
+
     for sub in ["pdfs", "markdown", "notes"]:
         folder = DATA_DIR / sub
         if not folder.exists():
@@ -115,49 +70,37 @@ def ingest_folder() -> None:
                 continue
 
             suffix = path.suffix.lower()
+
             if suffix == ".pdf":
-                raw_text = read_pdf(path)
+                raw = read_pdf(path)
                 doc_type = "pdf"
             else:
-                raw_text = read_text_file(path)
+                raw = read_text_file(path)
                 doc_type = "markdown" if suffix == ".md" else "notes"
 
-            chunks = chunk_text(raw_text)
-            print(f"[ingest] {path} -> {len(chunks)} raw chunks")
-            if chunks:
-                print(
-                    "[ingest] first chunk type:",
-                    type(chunks[0]),
-                    "preview:",
-                    repr(str(chunks[0])[:80]),
-                )
-
+            # Chunk and clean
+            chunks = chunk_text(raw)
+            chunks = [
+                c for c in chunks
+                if isinstance(c, str) and c.strip()
+            ]
             if not chunks:
-                print(f"[ingest] Skipping {path} (no chunks)")
+                print(f"Skipping {path} (no valid chunks)")
                 continue
 
-            cleaned_chunks, embeddings_list = encode_chunks_parallel(chunks, max_workers=4)
+            # Final safety: ensure all are strings
+            chunks = [str(c) for c in chunks]
 
-            if not cleaned_chunks or not embeddings_list:
-                print(f"[ingest] Skipping {path} (no embeddings produced)")
-                continue
+            # Encode
+            embeddings = embedder.encode(chunks)
 
-            if len(cleaned_chunks) != len(embeddings_list):
-                n = min(len(cleaned_chunks), len(embeddings_list))
-                print(
-                    f"[ingest] Warning: embeddings={len(embeddings_list)} "
-                    f"chunks={len(cleaned_chunks)} -> truncating to {n} for {path}"
-                )
-                cleaned_chunks = cleaned_chunks[:n]
-                embeddings_list = embeddings_list[:n]
-                
-            if not cleaned_chunks or not embeddings_list:
-                print(f"[ingest] Skipping {path} (nothing left after truncation)")
-                continue
+            # Make sure embeddings are plain Python lists
+            if hasattr(embeddings, "tolist"):
+                embeddings_list = embeddings.tolist()
+            else:
+                embeddings_list = [list(vec) for vec in embeddings]
 
-            docs_safe = [clean_text_for_storage(c) for c in cleaned_chunks]
-
-            ids = [f"{doc_id_counter}_{i}" for i in range(len(docs_safe))]
+            ids = [f"{doc_id_counter}_{i}" for i in range(len(chunks))]
             doc_id_counter += 1
 
             metadatas = [
@@ -165,18 +108,17 @@ def ingest_folder() -> None:
                     "source": path.name,
                     "path": str(path),
                     "type": doc_type,
-                    "mtime": path.stat().st_mtime,
+                    "mtime": path.stat().st_mtime,  # for recency bias
                 }
-                for _ in docs_safe
+                for _ in chunks
             ]
 
             collection.add(
                 ids=ids,
-                documents=docs_safe,
+                documents=chunks,
                 embeddings=embeddings_list,
                 metadatas=metadatas,
             )
-            print(f"[ingest] Indexed {len(docs_safe)} chunks from {path}")
 
 
 if __name__ == "__main__":
