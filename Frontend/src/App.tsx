@@ -1,8 +1,23 @@
-import { useState, ChangeEvent, KeyboardEvent, useMemo } from "react";
+import { useState, type ChangeEvent, type KeyboardEvent } from "react";
 import axios from "axios";
+import {
+  Search,
+  Upload,
+  FileText,
+  Sparkles,
+  Filter,
+  Clock,
+  ChevronRight,
+  AlertCircle,
+  Loader2,
+  Database
+} from "lucide-react";
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+/**
+ * Personal Semantic Search Engine - Knowledge Vault Premium UI
+ */
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 type ResultItem = {
   id: string;
@@ -10,11 +25,12 @@ type ResultItem = {
   source: string;
   score: number;
   text: string;
+  snippets?: string[];
 };
 
 const DOC_TYPES = ["pdf", "markdown", "notes"] as const;
 
-function App(): JSX.Element {
+function App() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ResultItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -23,11 +39,8 @@ function App(): JSX.Element {
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const hasFilters = useMemo(
-    () => types.length !== DOC_TYPES.length || maxAgeDays > 0,
-    [types, maxAgeDays]
-  );
+  const [aiAnswer, setAiAnswer] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
 
   const toggleType = (t: string): void => {
     setTypes((prev) =>
@@ -43,7 +56,7 @@ function App(): JSX.Element {
     try {
       const payload = {
         query,
-        top_k: 10,
+        top_k: 20,
         types: types.length ? types : null,
         max_age_days: maxAgeDays > 0 ? maxAgeDays : null,
         recency_boost: 0.3,
@@ -52,13 +65,35 @@ function App(): JSX.Element {
       const res = await axios.post<{ results: ResultItem[] }>(
         `${API_BASE}/search`,
         payload,
-        { timeout: 15000 }
+        {
+          timeout: 15000
+        }
       );
 
-      setResults(res.data.results || []);
+      const rawResults = res.data.results || [];
+      const seenText = new Set();
+      const sourceCount: Record<string, number> = {};
+      const filteredResults: ResultItem[] = [];
+
+      for (const item of rawResults) {
+        const normalizedText = item.text.trim().toLowerCase().substring(0, 80);
+        const textKey = `${item.source}-${normalizedText}`;
+        if (seenText.has(textKey)) continue;
+
+        const currentSourceCount = sourceCount[item.source] || 0;
+        if (currentSourceCount >= 3) continue;
+
+        seenText.add(textKey);
+        sourceCount[item.source] = currentSourceCount + 1;
+        filteredResults.push(item);
+
+        if (filteredResults.length >= 8) break;
+      }
+
+      setResults(filteredResults);
     } catch (err) {
       console.error(err);
-      setError("Search failed. Please try again.");
+      setError("Search failed. Check backend connection.");
     } finally {
       setLoading(false);
     }
@@ -78,482 +113,290 @@ function App(): JSX.Element {
       const formData = new FormData();
       files.forEach((f) => formData.append("files", f));
 
-      const res = await axios.post<{ files: string[] }>(
-        `${API_BASE}/upload`,
-        formData,
-        {
-          headers: { "Content-Type": "multipart/form-data" },
-          timeout: 60000,
-        }
-      );
-      // Optional: toast/inline success instead of alert in real prod
-      console.info("Uploaded files:", res.data.files);
+      await axios.post(`${API_BASE}/upload`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+        timeout: 60000
+      });
       setFiles([]);
     } catch (err) {
       console.error(err);
-      setError("Upload failed. Please try again.");
+      setError("Upload failed. Verify file compatibility.");
     } finally {
       setUploading(false);
     }
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === "Enter") {
-      runSearch();
+    if (e.key === "Enter") runSearch();
+  };
+
+  const textToHighlight = (text: string, q: string) => {
+    const words = q.trim().split(/\s+/).filter(word => word.length > 1);
+    if (words.length === 0) return text;
+
+    const pattern = new RegExp(`(${words.join("|")})`, "gi");
+    const parts = text.split(pattern);
+
+    return parts.map((part, i) =>
+      pattern.test(part) ? (
+        <span key={i} className="text-zinc-100 font-medium bg-zinc-800/50 px-0.5 rounded-sm shadow-[0_0_10px_rgba(255,255,255,0.05)]">
+          {part}
+        </span>
+      ) : (
+        part
+      )
+    );
+  };
+  const synthesizeAnswer = async (): Promise<void> => {
+    if (!results.length || generating) return;
+    setGenerating(true);
+    setAiAnswer(null);
+
+    try {
+      const res = await axios.post<{ answer: string }>(`${API_BASE}/ask`, {
+        query,
+        context: results.map((r) => r.text),
+      });
+      setAiAnswer(res.data.answer);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.response?.data?.detail || "AI synthesis failed. Ensure API key is set.");
+    } finally {
+      setGenerating(false);
     }
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        margin: 0,
-        backgroundColor: "#020617",
-        color: "#e5e7eb",
-        fontFamily:
-          "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      }}
-    >
-      <div
-        style={{
-          maxWidth: "1120px",
-          margin: "0 auto",
-          padding: "16px 16px 32px",
-        }}
-      >
-        {/* Header */}
-        <header
-          style={{
-            padding: "16px 0 24px",
-            textAlign: "center",
-          }}
-        >
-          <h1
-            style={{
-              fontSize: "clamp(1.8rem, 3vw, 2.4rem)",
-              fontWeight: 700,
-              letterSpacing: "-0.03em",
-              marginBottom: 8,
-            }}
-          >
-            Personal Semantic Search Engine
+    <div className="min-h-screen bg-[#030303] text-zinc-100 font-sans selection:bg-zinc-100 selection:text-zinc-900">
+      {/* Visual background accents */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none opacity-40">
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-zinc-800/20 blur-[120px] rounded-full" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-zinc-800/10 blur-[120px] rounded-full" />
+      </div>
+
+      <div className="relative w-full px-6 md:px-16 lg:px-24 py-12 md:py-20 lg:py-24 space-y-12 md:space-y-20">
+        {/* Header Section */}
+        <header className="flex flex-col items-center text-center space-y-4 md:space-y-6 animate-in fade-in zoom-in duration-1000">
+          <div className="inline-flex items-center gap-2 px-3 py-1 bg-zinc-900/50 border border-zinc-800 rounded-full backdrop-blur-md">
+            <Sparkles className="w-3.5 h-3.5 text-zinc-400" />
+            <span className="text-[9px] md:text-[10px] uppercase font-bold tracking-[0.2em] text-zinc-400">Personal AI Search</span>
+          </div>
+          <h1 className="text-5xl md:text-8xl font-bold tracking-tighter text-white">
+            Knowledge <span className="text-zinc-500 italic">Vault</span>
           </h1>
-          <p
-            style={{
-              fontSize: "0.9rem",
-              color: "#9ca3af",
-              maxWidth: 620,
-              margin: "0 auto",
-            }}
-          >
-            Upload your PDFs, markdown files, and notes, then query them with
-            semantic search and recency‑aware ranking.
+          <p className="text-zinc-500 max-w-xl mx-auto text-sm md:text-lg font-light tracking-wide leading-relaxed px-4">
+            Private semantic intelligence for your documents.
+            Zero noise, absolute focus.
           </p>
         </header>
 
-        {/* Layout: stacks on mobile, two columns on desktop */}
-        <main
-          style={{
-            display: "grid",
-            gap: 16,
-            gridTemplateColumns: "1fr",
-          }}
-        >
-          <style>
-            {`
-              @media (min-width: 900px) {
-                main {
-                  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.3fr);
-                }
-              }
-            `}
-          </style>
-
-          {/* Left column: upload + search */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {/* Upload */}
-            <section
-              style={{
-                padding: 16,
-                borderRadius: 12,
-                backgroundColor: "#020617",
-                border: "1px solid #1f2937",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: 8,
-                }}
-              >
-                <h2
-                  style={{
-                    fontSize: "1rem",
-                    fontWeight: 600,
-                    margin: 0,
-                  }}
-                >
-                  Upload documents
-                </h2>
-                <span
-                  style={{
-                    fontSize: "0.7rem",
-                    padding: "2px 8px",
-                    borderRadius: 999,
-                    backgroundColor: "#022c22",
-                    color: "#6ee7b7",
-                  }}
-                >
-                  PDF · MD · TXT
-                </span>
-              </div>
-              <p
-                style={{
-                  fontSize: "0.8rem",
-                  color: "#9ca3af",
-                  marginBottom: 10,
-                }}
-              >
-                New files are indexed into the vector database and become
-                searchable within seconds.
-              </p>
-              <div
-                style={{
-                  display: "flex",
-                  flexWrap: "wrap",
-                  gap: 8,
-                  alignItems: "center",
-                }}
-              >
-                <input
-                  type="file"
-                  multiple
-                  onChange={onFileChange}
-                  style={{ fontSize: "0.8rem" }}
-                />
-                <button
-                  onClick={uploadFiles}
-                  disabled={uploading || !files.length}
-                  style={{
-                    padding: "6px 12px",
-                    borderRadius: 999,
-                    border: "none",
-                    backgroundColor:
-                      uploading || !files.length ? "#4b5563" : "#22c55e",
-                    color: "#020617",
-                    fontSize: "0.8rem",
-                    fontWeight: 600,
-                    cursor:
-                      uploading || !files.length ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {uploading ? "Uploading…" : "Upload & index"}
-                </button>
-              </div>
-              {files.length > 0 && (
-                <p
-                  style={{
-                    marginTop: 6,
-                    fontSize: "0.75rem",
-                    color: "#a5b4fc",
-                    wordBreak: "break-all",
-                  }}
-                >
-                  {files.length} file(s) selected
-                </p>
-              )}
-            </section>
-
-            {/* Search */}
-            <section
-              style={{
-                padding: 16,
-                borderRadius: 12,
-                backgroundColor: "#020617",
-                border: "1px solid #1f2937",
-              }}
-            >
-              <h2
-                style={{
-                  fontSize: "1rem",
-                  fontWeight: 600,
-                  margin: "0 0 8px",
-                }}
-              >
-                Search
-              </h2>
-              <div style={{ marginBottom: 10 }}>
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-16 items-start">
+          {/* Main Search Area */}
+          <main className="lg:col-span-8 space-y-10 order-1 lg:order-2">
+            <div className="relative group animate-in fade-in slide-in-from-bottom-6 duration-1000">
+              <div className="absolute -inset-1 bg-gradient-to-r from-zinc-800 to-zinc-900 rounded-[2rem] blur opacity-25 group-focus-within:opacity-50 transition-opacity duration-1000"></div>
+              <div className="relative flex items-center bg-[#050505] border border-zinc-800 focus-within:border-zinc-500 rounded-[1.5rem] md:rounded-[2rem] overflow-hidden transition-all duration-500 shadow-2xl">
+                <Search className="ml-6 w-5 h-5 md:w-6 md:h-6 text-zinc-600 group-focus-within:text-zinc-300 transition-colors" />
                 <input
                   type="text"
                   value={query}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                    setQuery(e.target.value)
-                  }
+                  onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Ask something from your uploaded knowledge…"
-                  autoComplete="off"
-                  style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    borderRadius: 999,
-                    border: "1px solid #374151",
-                    backgroundColor: "#020617",
-                    color: "#e5e7eb",
-                    fontSize: "0.9rem",
-                    outline: "none",
-                  }}
+                  placeholder="Query your knowledge..."
+                  className="w-full bg-transparent px-5 py-5 md:py-7 text-base md:text-xl outline-none transition-all placeholder:text-zinc-800 text-zinc-100 font-light"
                 />
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  flexWrap: "wrap",
-                  gap: 8,
-                  marginBottom: 10,
-                  alignItems: "center",
-                }}
-              >
-                {DOC_TYPES.map((t) => (
-                  <label
-                    key={t}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4,
-                      fontSize: "0.8rem",
-                      padding: "4px 8px",
-                      borderRadius: 999,
-                      border: "1px solid #374151",
-                      backgroundColor: types.includes(t)
-                        ? "#1d4ed8"
-                        : "transparent",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={types.includes(t)}
-                      onChange={() => toggleType(t)}
-                    />
-                    <span>{t.toUpperCase()}</span>
-                  </label>
-                ))}
-                <div
-                  style={{
-                    fontSize: "0.8rem",
-                    color: "#9ca3af",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 4,
-                  }}
-                >
-                  <span>Max age (days):</span>
-                  <input
-                    type="number"
-                    min={0}
-                    value={maxAgeDays}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                      setMaxAgeDays(Number(e.target.value) || 0)
-                    }
-                    style={{
-                      width: 70,
-                      padding: "2px 4px",
-                      borderRadius: 6,
-                      border: "1px solid #374151",
-                      backgroundColor: "#020617",
-                      color: "#e5e7eb",
-                      fontSize: "0.8rem",
-                    }}
-                  />
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                }}
-              >
                 <button
                   onClick={runSearch}
                   disabled={loading || !query.trim()}
-                  style={{
-                    padding: "8px 16px",
-                    borderRadius: 999,
-                    border: "none",
-                    backgroundColor:
-                      loading || !query.trim() ? "#4b5563" : "#22c55e",
-                    color: "#020617",
-                    fontSize: "0.9rem",
-                    fontWeight: 600,
-                    cursor:
-                      loading || !query.trim()
-                        ? "not-allowed"
-                        : "pointer",
-                  }}
+                  className="mr-3 md:mr-4 px-6 md:px-8 py-3 md:py-4 bg-white text-black hover:bg-zinc-200 disabled:bg-zinc-900 disabled:text-zinc-700 rounded-xl md:rounded-2xl text-[10px] md:text-xs font-black tracking-widest transition-all active:scale-95"
                 >
-                  {loading ? "Searching…" : "Search"}
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "EXECUTE"}
                 </button>
-                {hasFilters && (
-                  <span
-                    style={{
-                      fontSize: "0.75rem",
-                      color: "#9ca3af",
-                    }}
+              </div>
+            </div>
+
+            <div className="space-y-8">
+              {error && (
+                <div className="p-4 bg-zinc-900/50 border border-zinc-800 text-zinc-400 rounded-2xl text-[11px] font-medium flex items-center gap-3">
+                  <AlertCircle className="w-4 h-4 text-zinc-600" />
+                  {error}
+                </div>
+              )}
+
+              <div className="flex items-end justify-between px-2">
+                <h3 className="text-[10px] md:text-xs font-black tracking-[0.3em] uppercase text-zinc-600">
+                  {loading ? "SEARCHING VAULT..." : results.length > 0 ? "TOP RELEVANT FRAGMENTS" : "IDLE ENGINE"}
+                </h3>
+                {results.length > 0 && (
+                  <button
+                    onClick={synthesizeAnswer}
+                    disabled={generating}
+                    className="flex items-center gap-2 px-4 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-[9px] font-black uppercase tracking-widest hover:border-zinc-400 hover:text-white transition-all disabled:opacity-50"
                   >
-                    Filters active
-                  </span>
+                    {generating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                    {generating ? "Synthesizing..." : "Synthesize with AI"}
+                  </button>
                 )}
               </div>
 
-              {error && (
-                <p
-                  style={{
-                    marginTop: 8,
-                    fontSize: "0.8rem",
-                    color: "#f97373",
-                  }}
-                >
-                  {error}
-                </p>
+              {aiAnswer && (
+                <div className="relative group/ai animate-in fade-in slide-in-from-top-4 duration-700">
+                  <div className="absolute -inset-0.5 bg-gradient-to-r from-zinc-500 to-zinc-800 rounded-3xl blur opacity-10"></div>
+                  <div className="relative bg-[#0a0a0a] border border-zinc-700/50 p-8 rounded-3xl space-y-4 shadow-2xl">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-zinc-900 rounded-lg">
+                        <Sparkles className="w-4 h-4 text-zinc-300" />
+                      </div>
+                      <span className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Vault Intelligence</span>
+                    </div>
+                    <p className="text-zinc-100 text-base md:text-lg leading-relaxed font-light whitespace-pre-wrap">
+                      {aiAnswer}
+                    </p>
+                  </div>
+                </div>
               )}
-            </section>
-          </div>
-
-          {/* Right column: results */}
-          <div>
-            <section
-              style={{
-                padding: 16,
-                borderRadius: 12,
-                backgroundColor: "#020617",
-                border: "1px solid #1f2937",
-                minHeight: 220,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: 8,
-                }}
-              >
-                <h2
-                  style={{
-                    fontSize: "1rem",
-                    fontWeight: 600,
-                    margin: 0,
-                  }}
-                >
-                  Results
-                </h2>
-                <span
-                  style={{
-                    fontSize: "0.75rem",
-                    color: "#9ca3af",
-                  }}
-                >
-                  {results.length
-                    ? `${results.length} chunks`
-                    : loading
-                    ? "Searching…"
-                    : "No results"}
-                </span>
-              </div>
 
               {!results.length && !loading && (
-                <p
-                  style={{
-                    fontSize: "0.85rem",
-                    color: "#9ca3af",
-                  }}
-                >
-                  Run a query to see semantic matches from your uploaded
-                  documents.
-                </p>
+                <div className="py-24 md:py-32 flex flex-col items-center justify-center space-y-6 border border-zinc-900/30 rounded-[3rem] bg-zinc-900/[0.02]">
+                  <Database className="w-12 h-12 text-zinc-900" />
+                  <div className="text-center space-y-2">
+                    <p className="text-zinc-700 text-[10px] font-bold uppercase tracking-[0.3em]">Knowledge Awaits</p>
+                    <p className="text-zinc-800 text-[10px] max-w-xs">Your semantic index is ready for retrieval.</p>
+                  </div>
+                </div>
               )}
 
-              <ul
-                style={{
-                  listStyle: "none",
-                  padding: 0,
-                  margin: 0,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 8,
-                }}
-              >
+              {loading && (
+                <div className="space-y-6">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="h-40 bg-zinc-900/10 border border-zinc-900/50 animate-pulse rounded-[2.5rem]" />
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-8">
                 {results.map((r) => (
-                  <li
+                  <article
                     key={r.id}
-                    style={{
-                      borderRadius: 10,
-                      padding: 10,
-                      backgroundColor: "#020617",
-                      border: "1px solid #374151",
-                    }}
+                    className="group relative bg-[#070707] border border-zinc-800/40 p-6 md:p-10 rounded-[2.5rem] hover:border-zinc-600 transition-all duration-700 hover:bg-[#090909]"
                   >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "baseline",
-                        marginBottom: 4,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: "0.8rem",
-                          color: "#9ca3af",
-                        }}
-                      >
-                        <span
-                          style={{
-                            display: "inline-block",
-                            padding: "2px 6px",
-                            borderRadius: 999,
-                            backgroundColor: "#1d4ed8",
-                            color: "#e5e7eb",
-                            fontSize: "0.7rem",
-                            marginRight: 6,
-                          }}
-                        >
-                          {r.type?.toUpperCase() || "DOC"}
-                        </span>
-                        <span>{r.source}</span>
+                    <div className="space-y-6">
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-center gap-4">
+                          <div className="w-10 h-10 bg-zinc-900 border border-zinc-800 rounded-xl flex items-center justify-center text-zinc-600 group-hover:text-zinc-300">
+                            <FileText className="w-5 h-5" />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] font-black uppercase text-zinc-500 tracking-widest">{r.type || "DOC"}</span>
+                              <ChevronRight className="w-3 h-3 text-zinc-800" />
+                              <span className="text-sm font-bold text-zinc-200">{r.source.split(/[/\\]/).pop()}</span>
+                            </div>
+                            <div className="flex items-center gap-2 opacity-50">
+                              <Clock className="w-3 h-3 text-zinc-700" />
+                              <span className="text-[8px] text-zinc-700 font-bold uppercase tracking-widest">Semantic Match</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-[10px] font-black font-mono text-zinc-700">
+                          {(r.score * 100).toFixed(1)}%
+                        </div>
                       </div>
-                      <div
-                        style={{
-                          fontSize: "0.75rem",
-                          color: "#a5b4fc",
-                          fontVariantNumeric: "tabular-nums",
-                        }}
-                      >
-                        {r.score.toFixed(3)}
+                      {r.snippets && r.snippets.length > 0 && (
+                        <div className="space-y-3 mb-6">
+                          <p className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600">Primary Match</p>
+                          <div className="space-y-2">
+                            {r.snippets.map((snip, idx) => (
+                              <div key={idx} className="p-3 bg-zinc-900/40 border-l-2 border-zinc-500 rounded-r-xl text-zinc-100 text-sm md:text-base leading-relaxed">
+                                {textToHighlight(snip, query)}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="space-y-3">
+                        {r.snippets && r.snippets.length > 0 && (
+                          <p className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600">Full Context</p>
+                        )}
+                        <p className="text-zinc-400 text-sm md:text-base leading-relaxed md:leading-loose tracking-wide font-light opacity-60">
+                          {query.trim() ? (
+                            textToHighlight(r.text, query)
+                          ) : (
+                            r.text
+                          )}
+                        </p>
                       </div>
                     </div>
-                    <p
-                      style={{
-                        margin: 0,
-                        fontSize: "0.9rem",
-                        color: "#e5e7eb",
-                        whiteSpace: "pre-wrap",
-                      }}
-                    >
-                      {r.text.length > 400
-                        ? `${r.text.slice(0, 400)}…`
-                        : r.text}
-                    </p>
-                  </li>
+                  </article>
                 ))}
-              </ul>
-            </section>
-          </div>
-        </main>
+              </div>
+            </div>
+          </main>
+
+          {/* Sidebar Area */}
+          <aside className="lg:col-span-4 space-y-8 order-2 lg:order-1 lg:sticky lg:top-12">
+            <div className="bg-[#070707]/30 border border-zinc-800/50 rounded-[2rem] p-8 space-y-8 backdrop-blur-xl">
+              <div className="flex items-center gap-3">
+                <Database className="w-4 h-4 text-zinc-600" />
+                <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Vault Ingestion</h2>
+              </div>
+              <div className="space-y-4">
+                <div className="relative border border-zinc-900 border-dashed rounded-2xl p-8 hover:bg-zinc-900/20 transition-all text-center cursor-pointer">
+                  <input type="file" multiple onChange={onFileChange} className="absolute inset-0 opacity-0 cursor-pointer" />
+                  <Upload className="w-8 h-8 text-zinc-800 mx-auto mb-3" />
+                  <p className="text-[10px] font-black text-zinc-700 uppercase tracking-widest">
+                    {files.length > 0 ? `${files.length} Ready` : "Drop PDF / MD"}
+                  </p>
+                </div>
+                <button
+                  onClick={uploadFiles}
+                  disabled={uploading || !files.length}
+                  className="w-full py-4 bg-zinc-900/50 text-zinc-400 hover:text-white rounded-2xl text-[10px] font-black tracking-widest border border-zinc-800/50 transition-all"
+                >
+                  {uploading ? "SYNCING..." : "SYNC TO VAULT"}
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-[#070707]/30 border border-zinc-800/50 rounded-[2rem] p-8 space-y-8 backdrop-blur-xl">
+              <div className="flex items-center gap-3">
+                <Filter className="w-4 h-4 text-zinc-600" />
+                <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Constraints</h2>
+              </div>
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-2">
+                  {DOC_TYPES.map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => toggleType(t)}
+                      className={`px-3 py-3 rounded-xl text-[9px] font-black tracking-widest uppercase border transition-all ${types.includes(t)
+                        ? "bg-zinc-100 border-zinc-100 text-black"
+                        : "bg-transparent border-zinc-900 text-zinc-700 hover:border-zinc-700"
+                        }`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+                <div className="space-y-4">
+                  <div className="flex justify-between text-[10px] font-black uppercase text-zinc-700 tracking-widest">
+                    <span>Age</span>
+                    <span>{maxAgeDays > 0 ? `${maxAgeDays}D` : "∞"}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={180}
+                    value={maxAgeDays}
+                    onChange={(e) => setMaxAgeDays(Number(e.target.value))}
+                    className="w-full h-1 bg-zinc-900 rounded-full appearance-none accent-zinc-100"
+                  />
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
       </div>
     </div>
   );

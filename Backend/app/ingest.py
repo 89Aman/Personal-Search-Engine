@@ -6,7 +6,7 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 from PyPDF2 import PdfReader
 
-from .config import DATA_DIR, CHROMA_DIR, COLLECTION_NAME, EMBEDDING_MODEL_NAME
+from app.config import DATA_DIR, CHROMA_DIR, COLLECTION_NAME, EMBEDDING_MODEL_NAME
 
 
 # Persistent Chroma client
@@ -31,8 +31,8 @@ def read_text_file(path: Path) -> str:
 
 def chunk_text(
     text: str,
-    chunk_size: int = 512,
-    overlap: int = 64,
+    chunk_size: int = 200, # Reduced for better semantic density
+    overlap: int = 40,
 ) -> List[str]:
     """Split text into overlapping word-based chunks."""
     if not text:
@@ -49,7 +49,7 @@ def chunk_text(
     while i < len(words):
         chunk_words = words[i : i + chunk_size]
         chunk = " ".join(chunk_words).strip()
-        if chunk:
+        if len(chunk) > 10: # Avoid tiny, meaningless chunks
             chunks.append(chunk)
         i += step
 
@@ -58,8 +58,7 @@ def chunk_text(
 
 def ingest_folder() -> None:
     """Index all PDFs / markdown / notes under data/."""
-    doc_id_counter = int(time.time())
-
+    # We'll use the filename as a prefix to prevent duplicate chunks per re-ingestion
     for sub in ["pdfs", "markdown", "notes"]:
         folder = DATA_DIR / sub
         if not folder.exists():
@@ -70,55 +69,54 @@ def ingest_folder() -> None:
                 continue
 
             suffix = path.suffix.lower()
-
-            if suffix == ".pdf":
-                raw = read_pdf(path)
-                doc_type = "pdf"
-            else:
-                raw = read_text_file(path)
-                doc_type = "markdown" if suffix == ".md" else "notes"
-
-            # Chunk and clean
-            chunks = chunk_text(raw)
-            chunks = [
-                c for c in chunks
-                if isinstance(c, str) and c.strip()
-            ]
-            if not chunks:
-                print(f"Skipping {path} (no valid chunks)")
+            if suffix not in [".pdf", ".md", ".txt"]:
                 continue
 
-            # Final safety: ensure all are strings
-            chunks = [str(c) for c in chunks]
+            try:
+                # 1. Deduplicate: Delete existing documents from THIS specific file
+                # This prevents bloat when re-running ingestion or uploading same file
+                collection.delete(where={"source": path.name})
 
-            # Encode
-            embeddings = embedder.encode(chunks)
+                if suffix == ".pdf":
+                    raw = read_pdf(path)
+                    doc_type = "pdf"
+                else:
+                    raw = read_text_file(path)
+                    doc_type = "markdown" if suffix == ".md" else "notes"
 
-            # Make sure embeddings are plain Python lists
-            if hasattr(embeddings, "tolist"):
-                embeddings_list = embeddings.tolist()
-            else:
-                embeddings_list = [list(vec) for vec in embeddings]
+                # 2. Chunk and clean
+                chunks = chunk_text(raw)
+                chunks = [c for c in chunks if isinstance(c, str) and c.strip()]
+                
+                if not chunks:
+                    continue
 
-            ids = [f"{doc_id_counter}_{i}" for i in range(len(chunks))]
-            doc_id_counter += 1
+                # 3. Encode and Add
+                embeddings = embedder.encode(chunks).tolist()
+                
+                # Use a stable ID format: filenamehash_chunkindex
+                file_hash = str(abs(hash(path.name)))
+                ids = [f"{file_hash}_{i}" for i in range(len(chunks))]
+                
+                metadatas = [
+                    {
+                        "source": path.name,
+                        "path": str(path),
+                        "type": doc_type,
+                        "mtime": path.stat().st_mtime,
+                    }
+                    for _ in chunks
+                ]
 
-            metadatas = [
-                {
-                    "source": path.name,
-                    "path": str(path),
-                    "type": doc_type,
-                    "mtime": path.stat().st_mtime,  # for recency bias
-                }
-                for _ in chunks
-            ]
-
-            collection.add(
-                ids=ids,
-                documents=chunks,
-                embeddings=embeddings_list,
-                metadatas=metadatas,
-            )
+                collection.add(
+                    ids=ids,
+                    documents=chunks,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
+                )
+                print(f"Indexed {len(chunks)} chunks from {path.name}")
+            except Exception as e:
+                print(f"Error indexing {path.name}: {e}")
 
 
 if __name__ == "__main__":
