@@ -1,0 +1,18 @@
+azure-cli                         2.80.0 *
+
+core                              2.80.0 *
+telemetry                          1.1.0
+
+Dependencies:
+msal                            1.34.0b1
+azure-mgmt-resource               23.3.0
+
+Python location 'C:\Program Files\Microsoft SDKs\Azure\CLI2\python.exe'
+Config directory 'C:\Users\Asus\.azure'
+Extensions directory 'C:\Users\Asus\.azure\cliextensions'
+
+Python (Windows) 3.13.9 (tags/v3.13.9:8183fa5, Oct 14 2025, 14:09:13) [MSC v.1944 64 bit (AMD64)]
+
+Legal docs and information: aka.ms/AzureCliLegal
+
+

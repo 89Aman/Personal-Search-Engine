@@ -99,8 +99,12 @@ def search(req: SearchRequest):
     ids, docs, metas, dists = result["ids"][0], result["documents"][0], result["metadatas"][0], result["distances"][0]
     q_words = set(req.query.lower().split())
     
+    seen_texts = set()
     scored = []
     for i, d, m, dist in zip(ids, docs, metas, dists):
+        if d in seen_texts:
+            continue
+        seen_texts.add(d)
         base_score = 1.0 / (1.0 + dist)
         keyword_boost = min(sum(1 for w in q_words if w in d.lower()) / (len(q_words) + 1), 0.5)
         recency = compute_recency_weight(m.get("mtime", time.time()), req.max_age_days)

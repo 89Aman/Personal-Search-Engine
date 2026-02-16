@@ -1,5 +1,5 @@
 # Use a modern Python base image
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -19,8 +19,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 # Copy dependency files
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies
-RUN uv pip install --system -r pyproject.toml
+# Install dependencies using uv sync or pip install from pyproject
+RUN uv pip install --system .
 
 # Copy the rest of the application
 COPY . .
