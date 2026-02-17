@@ -41,6 +41,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [success, setSuccess] = useState<string | null>(null);
 
   const toggleType = (t: string): void => {
     setTypes((prev) =>
@@ -52,6 +53,7 @@ function App() {
     if (!query.trim() || loading) return;
     setLoading(true);
     setError(null);
+    setSuccess(null);
 
     try {
       const payload = {
@@ -102,6 +104,8 @@ function App() {
   const onFileChange = (e: ChangeEvent<HTMLInputElement>): void => {
     if (!e.target.files) return;
     setFiles(Array.from(e.target.files));
+    setError(null);
+    setSuccess(null);
   };
 
   const uploadFiles = async (): Promise<void> => {
@@ -118,9 +122,11 @@ function App() {
         timeout: 60000
       });
       setFiles([]);
+      setSuccess("Upload Complete! Processing in background...");
     } catch (err) {
       console.error(err);
-      setError("Upload failed. Verify file compatibility.");
+      const msg = axios.isAxiosError(err) ? (err.response?.data?.detail || err.message) : "Upload failed";
+      setError(`Upload failed: ${msg}`);
     } finally {
       setUploading(false);
     }
@@ -217,9 +223,15 @@ function App() {
 
             <div className="space-y-8">
               {error && (
-                <div className="p-4 bg-zinc-900/50 border border-zinc-800 text-zinc-400 rounded-2xl text-[11px] font-medium flex items-center gap-3">
-                  <AlertCircle className="w-4 h-4 text-zinc-600" />
+                <div className="p-4 bg-red-900/20 border border-red-800 text-red-400 rounded-2xl text-[11px] font-medium flex items-center gap-3">
+                  <AlertCircle className="w-4 h-4 text-red-600" />
                   {error}
+                </div>
+              )}
+              {success && (
+                <div className="p-4 bg-green-900/20 border border-green-800 text-green-400 rounded-2xl text-[11px] font-medium flex items-center gap-3">
+                  <Sparkles className="w-4 h-4 text-green-600" />
+                  {success}
                 </div>
               )}
 

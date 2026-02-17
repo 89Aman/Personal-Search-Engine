@@ -30,7 +30,7 @@ app = FastAPI(title="Personal Semantic Search Engine")
 # Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL],
+    allow_origins=["*"],  # Temporarily allow all for debugging
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -132,8 +132,10 @@ def ask_ai(req: AskRequest):
         logger.error(f"AI Synthesis Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate AI response")
 
+from fastapi import BackgroundTasks
+
 @app.post("/upload")
-async def upload_files(files: List[UploadFile] = File(...)):
+async def upload_files(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
     paths = []
     for f in files:
         target_dir = DATA_DIR / ("pdfs" if f.filename.endswith(".pdf") else "markdown" if f.filename.endswith(".md") else "notes")
@@ -142,6 +144,6 @@ async def upload_files(files: List[UploadFile] = File(...)):
         path.write_bytes(await f.read())
         paths.append(path)
     
-    logger.info(f"Uploaded {len(paths)} files. Triggering re-ingestion.")
-    ingest_folder()
-    return {"status": "ok", "files": [p.name for p in paths]}
+    logger.info(f"Uploaded {len(paths)} files. Triggering background re-ingestion.")
+    background_tasks.add_task(ingest_folder)
+    return {"status": "ok", "message": "Ingestion started in background", "files": [p.name for p in paths]}
