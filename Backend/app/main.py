@@ -145,5 +145,3 @@ async def upload_files(files: List[UploadFile] = File(...)):
     logger.info(f"Uploaded {len(paths)} files. Triggering re-ingestion.")
     ingest_folder()
     return {"status": "ok", "files": [p.name for p in paths]}
-
-
