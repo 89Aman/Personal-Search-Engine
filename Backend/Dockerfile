@@ -20,7 +20,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 COPY pyproject.toml uv.lock ./
 
 # Install dependencies using uv sync or pip install from pyproject
-RUN uv pip install --system .
+RUN uv pip install --system --no-cache-dir .
 
 # Copy the rest of the application
 COPY . .
