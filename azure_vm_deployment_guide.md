@@ -67,12 +67,10 @@ Paste the following configuration (Right-click to paste in SSH):
 GEMINI_API_KEY=your_actual_gemini_api_key_here
 
 # --- Network Configuration ---
-# Replace <VM_PUBLIC_IP> with the actual public IP of your Azure VM
-# Example: http://20.50.100.12:8080
-VITE_API_BASE_URL=http://<VM_PUBLIC_IP>:8080
+# Your VM's Public IP
+VITE_API_BASE_URL=http://172.206.114.250:8080
 
-# Example: http://20.50.100.12
-FRONTEND_URL=http://<VM_PUBLIC_IP>
+FRONTEND_URL=http://172.206.114.250
 ```
 *Press `Ctrl+X`, then `Y`, then `Enter` to save and exit.*
 
