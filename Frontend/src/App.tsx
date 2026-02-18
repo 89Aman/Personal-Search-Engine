@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent, type KeyboardEvent } from "react";
+import { useState, useEffect, type ChangeEvent, type KeyboardEvent } from "react";
 import axios from "axios";
 import {
   Search,
@@ -42,6 +42,20 @@ function App() {
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
+  const [documents, setDocuments] = useState<string[]>([]); // List of uploaded documents
+
+  useEffect(() => {
+    fetchDocuments();
+  }, []);
+
+  const fetchDocuments = async () => {
+    try {
+      const res = await axios.get<{ documents: string[] }>(`${API_BASE}/documents`);
+      setDocuments(res.data.documents);
+    } catch (err) {
+      console.error("Failed to fetch documents", err);
+    }
+  };
 
   const toggleType = (t: string): void => {
     setTypes((prev) =>
@@ -123,6 +137,7 @@ function App() {
       });
       setFiles([]);
       setSuccess("Upload Complete! Processing in background...");
+      setTimeout(fetchDocuments, 2000); // Refresh list after a short delay
     } catch (err) {
       console.error(err);
       const msg = axios.isAxiosError(err) ? (err.response?.data?.detail || err.message) : "Upload failed";
@@ -220,6 +235,18 @@ function App() {
                 </button>
               </div>
             </div>
+
+            {/* Search Progress Bar */}
+            {loading && (
+              <div className="w-full bg-zinc-900 h-1 mt-4 overflow-hidden rounded-full">
+                <div
+                  className="bg-zinc-500 h-full w-1/3 animate-shimmer rounded-full"
+                  style={{
+                    backgroundImage: "linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent)"
+                  }}
+                />
+              </div>
+            )}
 
             <div className="space-y-8">
               {error && (
@@ -368,6 +395,23 @@ function App() {
                 >
                   {uploading ? "SYNCING..." : "SYNC TO VAULT"}
                 </button>
+
+                {/* Document List */}
+                <div className="pt-4 border-t border-zinc-800/50">
+                  <p className="text-[10px] font-black uppercase text-zinc-600 tracking-widest mb-3">Indexed Documents</p>
+                  <div className="max-h-40 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                    {documents.length === 0 ? (
+                      <p className="text-[10px] text-zinc-700 italic">No documents found.</p>
+                    ) : (
+                      documents.map((doc, i) => (
+                        <div key={i} className="flex items-center gap-2 text-zinc-400 text-xs py-1.5 px-2 hover:bg-zinc-900/30 rounded-lg transition-colors truncate">
+                          <FileText className="w-3 h-3 min-w-[12px]" />
+                          <span className="truncate" title={doc}>{doc}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
 

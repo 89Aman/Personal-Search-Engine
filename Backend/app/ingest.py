@@ -9,10 +9,29 @@ from PyPDF2 import PdfReader
 from app.config import DATA_DIR, CHROMA_DIR, COLLECTION_NAME, EMBEDDING_MODEL_NAME
 
 
-# Persistent Chroma client
-client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-collection = client.get_or_create_collection(COLLECTION_NAME)
-embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+# Global placeholders
+_client = None
+_collection = None
+_embedder = None
+
+def get_client():
+    global _client
+    if _client is None:
+        _client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    return _client
+
+def get_collection():
+    global _collection
+    if _collection is None:
+        _collection = get_client().get_or_create_collection(COLLECTION_NAME)
+    return _collection
+
+def get_embedder():
+    global _embedder
+    if _embedder is None:
+        _embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    return _embedder
+
 
 
 def read_pdf(path: Path) -> str:
@@ -58,7 +77,26 @@ def chunk_text(
 
 def ingest_folder() -> None:
     """Index all PDFs / markdown / notes under data/."""
-    # We'll use the filename as a prefix to prevent duplicate chunks per re-ingestion
+    try:
+        # 1. Fetch existing file metadata to avoid redundant processing
+        # We only need one chunk per file to check mtime, but fetching all metadatas is simpler for now
+        # given the scale of a personal search engine.
+        collection = get_collection()
+        existing_data = collection.get(include=["metadatas"])
+        existing_files = {} # filename -> mtime
+
+        if existing_data and existing_data["metadatas"]:
+            for m in existing_data["metadatas"]:
+                if m and "source" in m:
+                    # Store the mtime. If multiple chunks, this overwrites, which is fine
+                    # as they should be identical for the same file import.
+                    existing_files[m["source"]] = m.get("mtime", 0.0)
+    except Exception as e:
+        print(f"Error fetching existing metadata: {e}")
+        existing_files = {}
+
+    print(f"Starting ingestion. Found {len(existing_files)} files in index.")
+
     for sub in ["pdfs", "markdown", "notes"]:
         folder = DATA_DIR / sub
         if not folder.exists():
@@ -71,10 +109,20 @@ def ingest_folder() -> None:
             suffix = path.suffix.lower()
             if suffix not in [".pdf", ".md", ".txt"]:
                 continue
+            
+            # Check if file is already indexed and unchanged
+            current_mtime = path.stat().st_mtime
+            if path.name in existing_files:
+                stored_mtime = existing_files[path.name]
+                # Allow a small float tolerance or just exact check
+                if current_mtime <= stored_mtime:
+                    continue
+                print(f"Updating {path.name} (modified)...")
+            else:
+                print(f"New file found: {path.name}")
 
             try:
                 # 1. Deduplicate: Delete existing documents from THIS specific file
-                # This prevents bloat when re-running ingestion or uploading same file
                 collection.delete(where={"source": path.name})
 
                 if suffix == ".pdf":
@@ -92,6 +140,7 @@ def ingest_folder() -> None:
                     continue
 
                 # 3. Encode and Add
+                embedder = get_embedder()
                 embeddings = embedder.encode(chunks).tolist()
                 
                 # Use a stable ID format: filenamehash_chunkindex
@@ -103,7 +152,7 @@ def ingest_folder() -> None:
                         "source": path.name,
                         "path": str(path),
                         "type": doc_type,
-                        "mtime": path.stat().st_mtime,
+                        "mtime": current_mtime,
                     }
                     for _ in chunks
                 ]
@@ -117,7 +166,6 @@ def ingest_folder() -> None:
                 print(f"Indexed {len(chunks)} chunks from {path.name}")
             except Exception as e:
                 print(f"Error indexing {path.name}: {e}")
-
 
 if __name__ == "__main__":
     ingest_folder()

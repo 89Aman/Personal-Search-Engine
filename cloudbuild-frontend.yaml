@@ -1,0 +1,43 @@
+steps:
+  # 1. Fetch Backend URL (Requires 'pse-backend' to be deployed first)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'get-backend-url'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud run services describe pse-backend --platform managed --region us-central1 --format 'value(status.url)' > /workspace/backend_url.txt || echo "https://pse-backend-unknown.run.app" > /workspace/backend_url.txt
+
+  # 2. Build Frontend Image (passing backend URL as build arg)
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-frontend'
+    dir: 'Frontend'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        API_URL=$(cat /workspace/backend_url.txt)
+        echo "Building frontend with VITE_API_BASE_URL=$API_URL"
+        docker build --build-arg VITE_API_BASE_URL=$API_URL -t gcr.io/$PROJECT_ID/pse-frontend .
+
+  # 3. Push Frontend Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/pse-frontend']
+
+  # 4. Deploy Frontend to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'pse-frontend'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/pse-frontend'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+
+images:
+  - 'gcr.io/$PROJECT_ID/pse-frontend'

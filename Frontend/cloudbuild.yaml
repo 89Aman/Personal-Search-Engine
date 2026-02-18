@@ -1,7 +1,35 @@
 steps:
+  # 1. Build the frontend docker image
   - name: 'gcr.io/cloud-builders/docker'
-    args: [ 'build', '-t', 'gcr.io/$PROJECT_ID/pse-frontend', '--build-arg', 'VITE_API_BASE_URL=${_VITE_API_BASE_URL}', '.' ]
+    args: 
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/pse-frontend'
+      - '--build-arg'
+      - 'VITE_API_BASE_URL=${_VITE_API_BASE_URL}'
+      - '.'
+
+  # 2. Push the image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/pse-frontend']
+
+  # 3. Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'pse-frontend'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/pse-frontend'
+      - '--region'
+      - 'europe-west1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+
 images:
   - 'gcr.io/$PROJECT_ID/pse-frontend'
+
 substitutions:
-  _VITE_API_BASE_URL: ''
+  _VITE_API_BASE_URL: 'https://pse-backend-prod-971454143647.europe-west1.run.app'

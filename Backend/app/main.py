@@ -10,22 +10,61 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import shutil
 from app.config import (
     CHROMA_DIR,
     EMBEDDING_MODEL_NAME,
     COLLECTION_NAME,
     DATA_DIR,
+    BASE_DIR,
     FRONTEND_URL,
     GEMINI_API_KEY,
     ENV,
 )
-from app.ingest import ingest_folder
+
+from app.ingest import ingest_folder, get_collection, get_embedder
+from contextlib import asynccontextmanager
 
 # --- Setup & Configuration ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vault-backend")
 
-app = FastAPI(title="Personal Semantic Search Engine")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initializes resources on startup
+    logger.info("Lifespan: Initializing resources...")
+    
+    # Pre-load embedding model and vector DB
+    get_embedder()
+    get_collection()
+
+    # --- Startup Data Seeding (Cloud Run) ---
+    if ENV == "production":
+        logger.info("Production environment detected. Checking for baked-in data...")
+        baked_data = BASE_DIR / "data"
+        if baked_data.exists():
+            for category in ["pdfs", "markdown", "notes"]:
+                src_dir = baked_data / category
+                dst_dir = DATA_DIR / category
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                
+                if src_dir.exists():
+                    for item in src_dir.glob("*"):
+                        if item.is_file() and not (dst_dir / item.name).exists():
+                            try:
+                                shutil.copy2(item, dst_dir / item.name)
+                                logger.info(f"Seeded {item.name} to {dst_dir}")
+                            except Exception as e:
+                                logger.error(f"Failed to seed {item.name}: {e}")
+        else:
+            logger.warning(f"Baked data directory {baked_data} not found.")
+
+    logger.info(f"Vector DB initialized using {EMBEDDING_MODEL_NAME}")
+    yield
+    # Cleanup if needed
+    logger.info("Lifespan: Shutting down...")
+
+app = FastAPI(title="Personal Semantic Search Engine", lifespan=lifespan)
 
 # Middleware
 app.add_middleware(
@@ -36,7 +75,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- AI & Vector DB ---
+# --- AI Setup ---
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
@@ -44,11 +83,6 @@ if GEMINI_API_KEY:
 else:
     model = None
     logger.warning("GEMINI_API_KEY not found. AI synthesis disabled.")
-
-client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-collection = client.get_or_create_collection(COLLECTION_NAME)
-embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
-logger.info(f"Vector DB initialized using {EMBEDDING_MODEL_NAME}")
 
 # --- Schemas ---
 
@@ -82,6 +116,9 @@ def health_check():
 @app.post("/search")
 def search(req: SearchRequest):
     logger.info(f"Search request: {req.query}")
+    embedder = get_embedder()
+    collection = get_collection()
+    
     q_emb = embedder.encode(req.query)
     where = {}
     if req.types: where["type"] = {"$in": req.types}
@@ -147,3 +184,19 @@ async def upload_files(background_tasks: BackgroundTasks, files: List[UploadFile
     logger.info(f"Uploaded {len(paths)} files. Triggering background re-ingestion.")
     background_tasks.add_task(ingest_folder)
     return {"status": "ok", "message": "Ingestion started in background", "files": [p.name for p in paths]}
+
+@app.get("/documents")
+def list_documents():
+    """Returns a list of all documents stored in the system."""
+    files = []
+    # DATA_DIR is a pathlib.Path object
+    if DATA_DIR.exists():
+        for file_path in DATA_DIR.rglob("*"):
+            if file_path.is_file():
+                # Get relative path to DATA_DIR so users see "pdfs/file.pdf" etc.
+                try:
+                    relative_path = file_path.relative_to(DATA_DIR)
+                    files.append(str(relative_path))
+                except ValueError:
+                    logger.warning(f"Could not determine relative path for {file_path}")
+    return {"documents": sorted(files)}
