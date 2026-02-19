@@ -6,7 +6,7 @@ steps:
     args:
       - '-c'
       - |
-        gcloud run services describe pse-backend --platform managed --region us-central1 --format 'value(status.url)' > /workspace/backend_url.txt || echo "https://pse-backend-unknown.run.app" > /workspace/backend_url.txt
+        gcloud run services describe pse-backend-prod --platform managed --region europe-west1 --format 'value(status.url)' > /workspace/backend_url.txt || echo "https://pse-backend-prod-971454143647.europe-west1.run.app" > /workspace/backend_url.txt
 
   # 2. Build Frontend Image (passing backend URL as build arg)
   - name: 'gcr.io/cloud-builders/docker'
