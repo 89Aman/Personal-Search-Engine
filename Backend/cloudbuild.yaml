@@ -1,0 +1,30 @@
+steps:
+  # 1. Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/pse-backend-prod', '.']
+
+  # 2. Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/pse-backend-prod']
+
+  # 3. Deploy container to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'pse-backend-prod'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/pse-backend-prod'
+      - '--region'
+      - 'europe-west1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '2Gi'
+      - '--set-env-vars'
+      - 'GEMINI_API_KEY=AIzaSyDO2BCDEEIP-6QR5YTvRKyLTp1BBhR906w,SECRET_KEY=supersecretvaultkey,ENV=production'
+
+images:
+  - 'gcr.io/$PROJECT_ID/pse-backend-prod'

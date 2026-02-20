@@ -17,7 +17,7 @@ import {
  * Personal Semantic Search Engine - Knowledge Vault Premium UI
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 type ResultItem = {
   id: string;
@@ -51,7 +51,7 @@ function App() {
   const fetchDocuments = async () => {
     try {
       const res = await axios.get<{ documents: string[] }>(`${API_BASE}/documents`);
-      setDocuments(res.data.documents);
+      setDocuments(res.data?.documents || []);
     } catch (err) {
       console.error("Failed to fetch documents", err);
     }
@@ -128,15 +128,21 @@ function App() {
     setError(null);
 
     try {
-      const formData = new FormData();
-      files.forEach((f) => formData.append("files", f));
+      // Upload files sequentially to avoid hitting payload limits (e.g. Cloud Run 32MB)
+      let uploadedCount = 0;
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append("files", file);
 
-      await axios.post(`${API_BASE}/upload`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-        timeout: 60000
-      });
+        await axios.post(`${API_BASE}/upload`, formData, {
+          headers: { "Content-Type": "multipart/form-data" },
+          timeout: 300000
+        });
+        uploadedCount++;
+      }
+
       setFiles([]);
-      setSuccess("Upload Complete! Processing in background...");
+      setSuccess(`Upload Complete! ${uploadedCount} files processed.`);
       setTimeout(fetchDocuments, 2000); // Refresh list after a short delay
     } catch (err) {
       console.error(err);

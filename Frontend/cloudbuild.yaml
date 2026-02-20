@@ -19,7 +19,7 @@ steps:
     args:
       - 'run'
       - 'deploy'
-      - 'pse-frontend'
+      - 'pse-frontend-prod'
       - '--image'
       - 'gcr.io/$PROJECT_ID/pse-frontend'
       - '--region'
@@ -32,4 +32,4 @@ images:
   - 'gcr.io/$PROJECT_ID/pse-frontend'
 
 substitutions:
-  _VITE_API_BASE_URL: 'https://pse-backend-prod-971454143647.europe-west1.run.app'
+  _VITE_API_BASE_URL: "https://pse-backend-prod-971454143647.europe-west1.run.app"

@@ -10,7 +10,7 @@ dependencies = [
     "python-multipart",
     "chromadb",
     "sentence-transformers",
-    "PyPDF2",
+    "pypdf",
     "google-generativeai",
     "python-dotenv",
     "pydantic",

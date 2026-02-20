@@ -1,7 +1,11 @@
+
 import logging
 import time
 from typing import List, Optional
 from datetime import datetime
+import asyncio
+from contextlib import asynccontextmanager
+import shutil
 
 import google.generativeai as genai
 import chromadb
@@ -10,7 +14,6 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-import shutil
 from app.config import (
     CHROMA_DIR,
     EMBEDDING_MODEL_NAME,
@@ -21,26 +24,16 @@ from app.config import (
     GEMINI_API_KEY,
     ENV,
 )
-
 from app.ingest import ingest_folder, get_collection, get_embedder
-from contextlib import asynccontextmanager
 
-# --- Setup & Configuration ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vault-backend")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Initializes resources on startup
-    logger.info("Lifespan: Initializing resources...")
+async def background_init():
+    logger.info("Background init started")
     
-    # Pre-load embedding model and vector DB
-    get_embedder()
-    get_collection()
-
-    # --- Startup Data Seeding (Cloud Run) ---
     if ENV == "production":
-        logger.info("Production environment detected. Checking for baked-in data...")
+        logger.info("Production env: checking baked data")
         baked_data = BASE_DIR / "data"
         if baked_data.exists():
             for category in ["pdfs", "markdown", "notes"]:
@@ -53,38 +46,43 @@ async def lifespan(app: FastAPI):
                         if item.is_file() and not (dst_dir / item.name).exists():
                             try:
                                 shutil.copy2(item, dst_dir / item.name)
-                                logger.info(f"Seeded {item.name} to {dst_dir}")
+                                logger.info(f"Copied {item.name}")
                             except Exception as e:
-                                logger.error(f"Failed to seed {item.name}: {e}")
+                                logger.error(f"Seed failed {item.name}: {e}")
         else:
-            logger.warning(f"Baked data directory {baked_data} not found.")
+            logger.warning(f"Baked data dir {baked_data} missing")
 
-    logger.info(f"Vector DB initialized using {EMBEDDING_MODEL_NAME}")
+    logger.info("Warming up models")
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, get_embedder)
+    await loop.run_in_executor(None, get_collection)
+    
+    logger.info("Init complete")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Server starting")
+    asyncio.create_task(background_init())
     yield
-    # Cleanup if needed
-    logger.info("Lifespan: Shutting down...")
+    logger.info("Server shutdown")
 
 app = FastAPI(title="Personal Semantic Search Engine", lifespan=lifespan)
 
-# Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Temporarily allow all for debugging
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- AI Setup ---
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    logger.info("Gemini AI initialized.")
+    model = genai.GenerativeModel('gemini-2.0-flash')
+    logger.info("Gemini initialized")
 else:
     model = None
-    logger.warning("GEMINI_API_KEY not found. AI synthesis disabled.")
-
-# --- Schemas ---
+    logger.warning("GEMINI_API_KEY missing")
 
 class SearchRequest(BaseModel):
     query: str
@@ -97,8 +95,6 @@ class AskRequest(BaseModel):
     query: str
     context: List[str]
 
-# --- Core Logic ---
-
 def compute_recency_weight(mtime: float, max_age_days: Optional[int]) -> float:
     if max_age_days is None: return 1.0
     now = time.time()
@@ -107,15 +103,13 @@ def compute_recency_weight(mtime: float, max_age_days: Optional[int]) -> float:
     if age_days > max_age_days: return 0.2
     return 1.0 - (age_days / (max_age_days + 1e-6)) * 0.8
 
-# --- Endpoints ---
-
 @app.get("/health")
 def health_check():
-    return {"status": "operational", "timestamp": datetime.now().isoformat(), "env": ENV}
+    return {"status": "ok", "timestamp": datetime.now().isoformat(), "env": ENV}
 
 @app.post("/search")
 def search(req: SearchRequest):
-    logger.info(f"Search request: {req.query}")
+    logger.info(f"Search: {req.query}")
     embedder = get_embedder()
     collection = get_collection()
     
@@ -159,20 +153,21 @@ def search(req: SearchRequest):
 
 @app.post("/ask")
 def ask_ai(req: AskRequest):
-    if not model: raise HTTPException(status_code=400, detail="Gemini key missing")
+    if not model: raise HTTPException(status_code=400, detail="API key missing")
     context_str = "\n\n".join(req.context[:5])
-    prompt = f"Use context to answer concisely: {context_str}\n\nQuestion: {req.query}"
+    prompt = f"Use context to answer: {context_str}\n\nQuestion: {req.query}"
     try:
         response = model.generate_content(prompt)
         return {"answer": response.text}
     except Exception as e:
-        logger.error(f"AI Synthesis Error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate AI response")
-
-from fastapi import BackgroundTasks
+        logger.error(f"AI Error: {e}")
+        if ENV != "production":
+            logger.warning(f"AI Failed: {e}")
+            return {"answer": "AI Error. Context: " + context_str[:100] + "..."}
+        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
 
 @app.post("/upload")
-async def upload_files(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
+async def upload_files(files: List[UploadFile] = File(...)):
     paths = []
     for f in files:
         target_dir = DATA_DIR / ("pdfs" if f.filename.endswith(".pdf") else "markdown" if f.filename.endswith(".md") else "notes")
@@ -181,22 +176,22 @@ async def upload_files(background_tasks: BackgroundTasks, files: List[UploadFile
         path.write_bytes(await f.read())
         paths.append(path)
     
-    logger.info(f"Uploaded {len(paths)} files. Triggering background re-ingestion.")
-    background_tasks.add_task(ingest_folder)
-    return {"status": "ok", "message": "Ingestion started in background", "files": [p.name for p in paths]}
+    logger.info(f"Uploaded {len(paths)} files")
+    
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, ingest_folder)
+
+    return {"status": "ok", "message": "Files uploaded", "files": [p.name for p in paths]}
 
 @app.get("/documents")
 def list_documents():
-    """Returns a list of all documents stored in the system."""
     files = []
-    # DATA_DIR is a pathlib.Path object
     if DATA_DIR.exists():
         for file_path in DATA_DIR.rglob("*"):
             if file_path.is_file():
-                # Get relative path to DATA_DIR so users see "pdfs/file.pdf" etc.
                 try:
                     relative_path = file_path.relative_to(DATA_DIR)
                     files.append(str(relative_path))
                 except ValueError:
-                    logger.warning(f"Could not determine relative path for {file_path}")
+                    logger.warning(f"Invalid path: {file_path}")
     return {"documents": sorted(files)}
